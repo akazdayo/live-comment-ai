@@ -13,4 +13,4 @@ wheels/
 .env
 
 # tempoary files
-temp/*
+temp/*.mp4

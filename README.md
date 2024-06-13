@@ -1,3 +1,9 @@
-# gemini-bot
+# live-comment-ai
+ゲームを実況してくれるAIです。デフォルトはギルティギアになっています。
 
-Describe your project here.
+# Install and run
+Create .env file.
+```bash
+$ rye sync
+$ rye run start
+```
