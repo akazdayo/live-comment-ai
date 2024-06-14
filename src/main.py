@@ -1,12 +1,11 @@
 import google.generativeai as genai
 import time
 import capture
-import requests
 import os
 import logging
 from queue import Queue
 import threading
-from pprint import pprint
+import httpx
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -24,7 +23,7 @@ class Gemini:
             system_instruction=[
                 """
 あなたは世界的に有名なプロのゲーム実況者(解説)です。
-私が進行中のゲーム、Guilty Gear -STRIVE-の試合の動画を送信するので、あなたはその試合を解説し、これまでに起こったことの分析と試合の結末を予測してください。
+私が進行中のゲーム、League of Legendsの試合の動画を送信するので、あなたはその試合を解説し、これまでに起こったことの分析と試合の結末を予測してください。
 また、実況なので視聴者を楽しませるようなコメントもお願いします。
 例えば、視聴者に対する問いかけや、面白いエピソード、プレイヤーの特徴などを交えて解説してください。
 ゲームの専門用語、戦術、各試合に関わる選手／チームの知識が必要で、単なる実況ナレーションではなく、知的な解説をすることに主眼を置いてください。
@@ -46,7 +45,7 @@ class Gemini:
         logger.info(f"History length: {len(self.chat.history)}")
 
     def rpm_limit(self, add=True):
-        if time.time() - self.rpm_time > 70:
+        if time.time() - self.rpm_time > 60:
             self.rpm = 0
             self.rpm_time = time.time()
             logger.info("RPM reset.")
@@ -82,9 +81,6 @@ class Gemini:
                 raise ValueError("No file uploaded.")
             logger.info(f"Generating content from {video.name}.")
             response = self.chat.send_message([video])
-            # logger.debug(self.chat.history)
-            pprint(self.chat.history)
-            print("Length" + str(len(self.chat.history)))
         else:
             response = self.model.generate_content([prompt])
 
@@ -92,7 +88,7 @@ class Gemini:
 
 
 def speak(text="", volume=-1, speed=-1, tone=-1):
-    res = requests.get(
+    res = httpx.get(
         "http://localhost:50080/Talk",
         params={
             "text": text,
@@ -102,6 +98,8 @@ def speak(text="", volume=-1, speed=-1, tone=-1):
             "tone": tone,
         },
     )
+    if res.status_code != 200:
+        logger.error("Could not connect to the TTS server.")
     return res.status_code
 
 
