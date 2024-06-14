@@ -12,6 +12,7 @@ dependencies = [
     "opencv-python>=4.10.0.82",
     "numpy>=1.26.4",
     "pyautogui>=0.9.54",
+    "loguru>=0.7.2",
 ]
 readme = "README.md"
 requires-python = ">= 3.8"

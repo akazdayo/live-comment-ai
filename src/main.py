@@ -1,36 +1,24 @@
+from tomllib import load
+from uuid import uuid4
+import subprocess
 import google.generativeai as genai
-import time
-import capture
-import os
-import logging
 from queue import Queue
-import threading
+import time
+import os
 import httpx
+import threading
+import concurrent.futures
+from loguru import logger
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# Add a logging handler
-handler = logging.StreamHandler()
-handler.setLevel(logging.INFO)
-logger.addHandler(handler)
+with open("settings.toml", "rb") as f:
+    settings = load(f)
 
 
 class Gemini:
     def __init__(self) -> None:
         self.model = genai.GenerativeModel(
-            model_name="models/gemini-1.5-pro",
-            system_instruction=[
-                """
-あなたは世界的に有名なプロのゲーム実況者(解説)です。
-私が進行中のゲーム、League of Legendsの試合の動画を送信するので、あなたはその試合を解説し、これまでに起こったことの分析と試合の結末を予測してください。
-また、実況なので視聴者を楽しませるようなコメントもお願いします。
-例えば、視聴者に対する問いかけや、面白いエピソード、プレイヤーの特徴などを交えて解説してください。
-ゲームの専門用語、戦術、各試合に関わる選手／チームの知識が必要で、単なる実況ナレーションではなく、知的な解説をすることに主眼を置いてください。
-送信される動画は、途中で途切れるものがありますがすぐに次の動画が送信されますので、気にせず解説を続けてください。
-あなたの性格は、熱血で情熱的なタイプです。視聴者に対して熱く語りかけることが得意で、絵文字を使用できます。
-"""
-            ],
+            model_name=settings["gemini"]["model"],
+            system_instruction=[settings["gemini"]["prompt"]],
         )
         self.chat = self.model.start_chat()
         self.file_queue = Queue()
@@ -38,158 +26,154 @@ class Gemini:
         self.rpm = 0
         self.rpm_time = 0
 
-    def del_old_history(self):
-        if len(self.chat.history) > 6:  # 3回以上の会話は切り捨て
-            self.chat.history = self.chat.history[-6:]  # 偶数
-            logger.info("History truncated.")
-        logger.info(f"History length: {len(self.chat.history)}")
+    def generate(self):
+        if len(self.chat.history) > settings["gemini"]["max_history_length"] * 2:
+            self.chat.history = self.chat.history[
+                -settings["gemini"]["max_history_length"] :
+            ]
+
+        while self.file_queue.qsize() <= 0:
+            logger.info("Waiting for file...")
+            time.sleep(1)
+
+        video = self.file_queue.get()
+        logger.info("Generating...")
+        logger.debug(f"queue size: {self.file_queue.qsize()}")
+        response = self.chat.send_message([video])
+
+        return response
+
+    def upload(self, file_name: str):
+        upload_file = genai.upload_file(f"temp/{file_name}.mp4")
+
+        while upload_file.state.name == "PROCESSING":
+            time.sleep(0.5)
+            logger.info("Uploading...")
+            upload_file = genai.get_file(upload_file.name)
+
+        if upload_file.state.name == "FAILED":
+            raise ValueError("Failed to upload file.")
+
+        self.all_files.append(upload_file.name)
+        self.file_queue.put(upload_file)
+        os.remove(f"temp/{file_name}.mp4")
+        return upload_file
 
     def rpm_limit(self, add=True):
         if time.time() - self.rpm_time > 60:
             self.rpm = 0
             self.rpm_time = time.time()
-            logger.info("RPM reset.")
-        if self.rpm > 2:
+
+        if self.rpm > settings["gemini"]["max_rpm"]:
             logger.warning("RPM limit reached.")
             return True
-        logger.debug(f"RPM: {self.rpm}")
+
         if add:
             self.rpm += 1
         return False
 
-    def upload(self, path, display_name):
-        file = genai.upload_file(path=path, display_name=display_name)
-        while file.state.name == "PROCESSING":
-            time.sleep(0.5)
-            file = genai.get_file(file.name)
 
-        if file.state.name == "FAILED":
-            logger.error("Upload failed.")
-            raise ValueError(file.state.name)
+class Main:
+    def __init__(self) -> None:
+        self.upload_thread = None
+        self.kill_flag = False
+        self.gemini = Gemini()
 
-        self.all_files.append(file.name)
-        self.file_queue.put(file)
-        os.remove(path)
-        return file
+    def capture(self):
+        while not self.kill_flag:
+            if not self.gemini.file_queue.empty() or self.gemini.rpm_limit(False):
+                logger.info("File queue is not empty or RPM limit reached.")
+                time.sleep(1)
+                continue
 
-    def generate(self, prompt: str, file: bool = False):
-        self.del_old_history()
+            file_name = self._capture()
+            if self.upload_thread is not None:
+                self.upload_thread.join()
+            threading.Thread(
+                target=self.gemini.upload, args=(file_name,), daemon=True
+            ).start()
 
-        if file:
-            video = self.file_queue.get()
-            if not video:
-                raise ValueError("No file uploaded.")
-            logger.info(f"Generating content from {video.name}.")
-            response = self.chat.send_message([video])
-        else:
-            response = self.model.generate_content([prompt])
+    def generate(self):
+        while not self.kill_flag:
+            if self.gemini.file_queue.qsize() <= 0:
+                logger.info("Waiting for file...")
+                time.sleep(1)
+                continue
+            if self.gemini.rpm_limit():
+                time.sleep(1)
+                continue
 
-        return response
+            response = self.gemini.generate()
+            logger.info(response.text)
+            self.TTS(response.text, speed=280)
+            time.sleep(15)
 
-
-def speak(text="", volume=-1, speed=-1, tone=-1):
-    res = httpx.get(
-        "http://localhost:50080/Talk",
-        params={
-            "text": text,
-            "voice": 1,
-            "volume": volume,
-            "speed": speed,
-            "tone": tone,
-        },
-    )
-    if res.status_code != 200:
-        logger.error("Could not connect to the TTS server.")
-    return res.status_code
-
-
-def capture_and_upload():
-    global upload_thread
-    while True:
-        if kill_flag:
-            break
-        while (not gemini.file_queue.empty() and not video_stack) or gemini.rpm_limit(
-            False
-        ):
-            if kill_flag:
-                break
-            time.sleep(1)
-            logger.info("Waiting for queue to empty...")
-        file_name = str(capture.capture())
-        logger.info("Capture Completed.")
-        if upload_thread:
-            upload_thread.join()
-
-        upload_thread = threading.Thread(
-            target=gemini.upload, args=(f"temp/{file_name}.mp4", file_name), daemon=True
+    def TTS(self, text="", volume=-1, speed=-1, tone=-1):
+        res = httpx.get(
+            "http://localhost:50080/Talk",
+            params={
+                "text": text,
+                "voice": 1,
+                "volume": volume,
+                "speed": speed,
+                "tone": tone,
+            },
         )
-        upload_thread.start()
-    logger.info("Capture thread exited.")
+        if res.status_code != 200:
+            logger.critical("Failed to request TTS." + res.status_code)
+        return res.status_code
 
+    def exit(self):
+        input("Press Enter to exit.")
+        self.kill_flag = True
 
-def main():
-    while True:
-        if kill_flag:
-            break
-        while gemini.file_queue.empty():
-            logger.info("Waiting for file...")
-            time.sleep(1)
-        while gemini.rpm_limit():
-            logger.info("RPM limit reached. Waiting...")
-            time.sleep(1)
-        logger.debug(f"{gemini.file_queue.qsize()} files in queue.")
-        response = gemini.generate(
-            "",
-            file=True,
+    def delete_files(self):
+        for file in self.gemini.all_files:
+            genai.delete_file(file)
+            logger.debug("Deleted file:", file)
+        for file in os.listdir("temp"):
+            if file.endswith(".mp4"):
+                os.remove(f"temp/{file}")
+                logger.debug("Deleted file:", file)
+
+    def _capture(self):
+        file_name = str(uuid4())
+        logger.info("Capture Starting...")
+        status = subprocess.call(  # ffmpegを呼び出し、画面をキャプチャする
+            # Windowsのみ対応
+            [
+                "ffmpeg",
+                "-f",
+                "gdigrab",
+                "-offset_x",
+                "0",
+                "-offset_y",
+                "0",
+                "-framerate",
+                "24",
+                "-video_size",
+                "1920x1080",
+                "-i",
+                "desktop",
+                "-vframes",
+                "240",
+                "-loglevel",
+                "quiet",
+                f"temp/{file_name}.mp4",
+            ]
         )
-        print(response.text)
-
-        try:
-            speak(
-                response.text, volume=30, speed=250
-            )  # 棒読みちゃんのインストール、起動が必要
-        except Exception as e:
-            logger.error("Could not connect to the TTS server.")
-            logger.error(str(e))
-        time.sleep(15)
-    logger.info("Main thread exited.")
+        logger.info("Capture Finished.")
+        if status != 0:
+            logger.critical(f"Failed to capture screen. Status code: {status}")
+            raise ValueError(f"Failed to capture screen. Status code: {status}")
+        return file_name
 
 
 if __name__ == "__main__":
-    kill_flag = False
-    video_stack = False
-    gemini = Gemini()
-    upload_thread = None
+    main = Main()
 
-    capture_thread = threading.Thread(target=capture_and_upload, daemon=True)
-    main_thread = threading.Thread(target=main, daemon=True)
-
-    capture_thread.start()
-    main_thread.start()
-    while True:
-        input_text = input("Press Enter to exit.")
-        if input_text == "":
-            break
-        elif input_text == "reset":
-            gemini.chat = gemini.model.start_chat()
-            print("Chat reset.")
-            logger.info("Chat reset.")
-        elif input_text == "rewind":
-            gemini.chat.rewind()
-            print("Chat rewound.")
-            logger.info("Chat rewound.")
-
-    logger.info("Exiting...")
-    kill_flag = True
-    capture_thread.join()
-    main_thread.join()
-
-    for file in gemini.all_files:
-        genai.delete_file(file)
-        print(f"Deleted {file}.")
-
-    for file in os.listdir("temp"):
-        if file.endswith(".mp4"):
-            os.remove(f"temp/{file}")
-            print(f"Deleted {file}.")
-    exit(0)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor.submit(main.capture)
+        executor.submit(main.generate)
+        executor.submit(main.exit)
+    main.delete_files()
