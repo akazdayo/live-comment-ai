@@ -7,7 +7,8 @@ from uuid import uuid4
 
 def capture():
     file_name = str(uuid4())
-    status = subprocess.call(
+    status = subprocess.call(  # ffmpegを呼び出し、画面をキャプチャする
+        # Windowsのみ対応
         [
             "ffmpeg",
             "-f",
