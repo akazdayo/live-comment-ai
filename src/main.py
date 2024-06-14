@@ -104,7 +104,7 @@ def capture_and_upload():
                 break
             time.sleep(1)
             logger.info("Waiting for queue to empty...")
-        file_name = str(capture.get_capture())
+        file_name = str(capture.capture())
         logger.info("Capture Completed.")
         if upload_thread:
             upload_thread.join()

@@ -1,32 +1,34 @@
-import cv2
-import pyautogui
-import time
-import numpy as np
-import uuid
+# ffmpeg -f gdigrab -offset_x 0 -offset_y 0 -framerate 24 -video_size 1920x1080 -i desktop output.mp4
+# ffmpeg -f gdigrab -offset_x 0 -offset_y 0 -framerate 24 -video_size 1920x1080 -i desktop -vframes 240 output.mp4
+
+import subprocess
+from uuid import uuid4
 
 
-def get_capture():
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-
-    # VideoWriterオブジェクトを作成
-    id = uuid.uuid4()
-    out = cv2.VideoWriter(f"temp/{id}.mp4", fourcc, 30.0, (1920, 1080))
-
-    # 録画開始時間を記録
-    start_time = time.time()
-
-    # 1分間録画
-    while time.time() - start_time < 15:  # 15秒間
-        # スクリーンショットを取得
-        img = pyautogui.screenshot()
-        # BGR形式に変換 (OpenCVはRGBではなくBGRを使用)
-        frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-        # フレームを書き込む
-        out.write(frame)
-
-    # 保存
-    out.release()
-    return id
-
-
-get_capture()
+def capture():
+    file_name = str(uuid4())
+    status = subprocess.call(
+        [
+            "ffmpeg",
+            "-f",
+            "gdigrab",
+            "-offset_x",
+            "0",
+            "-offset_y",
+            "0",
+            "-framerate",
+            "24",
+            "-video_size",
+            "1920x1080",
+            "-i",
+            "desktop",
+            "-vframes",
+            "240",
+            "-loglevel",
+            "quiet",
+            f"temp/{file_name}.mp4",
+        ]
+    )
+    if status != 0:
+        raise ValueError(f"Failed to capture screen. Status code: {status}")
+    return file_name
