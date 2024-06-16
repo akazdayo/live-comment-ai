@@ -105,7 +105,8 @@ class Main:
 
             response = self.gemini.generate()
             logger.info(response.text)
-            self.TTS(response.text, speed=280)
+            if settings["general"]["text_to_speech"]:
+                self.TTS(response.text, speed=280)
             time.sleep(15)
 
     def TTS(self, text="", volume=-1, speed=-1, tone=-1):
@@ -150,13 +151,13 @@ class Main:
                 "-offset_y",
                 "0",
                 "-framerate",
-                "24",
+                settings["capture"]["framerate"],
                 "-video_size",
-                "1920x1080",
+                f"{settings['capture']["width"]}x{settings['capture']["height"]}",
                 "-i",
                 "desktop",
                 "-vframes",
-                "240",
+                settings["capture"]["max_frame"],
                 "-loglevel",
                 "quiet",
                 f"temp/{file_name}.mp4",

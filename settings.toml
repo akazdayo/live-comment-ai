@@ -19,6 +19,7 @@ prompt = """
 """
 
 [capture]
-framerate = 30
+framerate = 24
+max_frame = 120
 width = 1920
 height = 1080
